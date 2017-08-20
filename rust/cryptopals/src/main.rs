@@ -8,6 +8,7 @@ mod errors {
     error_chain! {
         foreign_links {
             Crypto(cryptopals::Error);
+            Io(std::io::Error);
         }
     }
 }
@@ -29,6 +30,7 @@ fn set1() -> Result<()> {
     part1()?;
     part2()?;
     part3()?;
+    part4()?;
     Ok(())
 }
 
@@ -75,8 +77,26 @@ fn part3() -> Result<()> {
     println!("    input: {}", input);
     let input_bytes = cryptopals::hex_decode(input.as_bytes())?;
     let cracked = cryptopals::set1::xor_crack::crack_single_char_xor(&input_bytes)?;
-    println!("    -> cracked message: {}", cracked.content);
+    println!("    -> cracked message: {:?}", cracked.content);
     println!("    -> cracked xor key (byte): {}", cracked.xor_key_n);
     println!("    -> cracked xor key (full hex): {}", cracked.hexed_xor_key);
+    Ok(())
+}
+
+
+/// From a set of 60 hex encoded strings, find the one that's encrypted by a single-char xor
+fn part4() -> Result<()> {
+    use std::io::Read;
+    println!("  * Challenge 4:");
+    println!("   -- find the string that's encrypted by a single-char xor --");
+    let filename = "input_files/set1_challenge4.txt";
+    let path = std::path::PathBuf::from(filename);
+    let mut file = std::fs::File::open(&path)?;
+    println!("    reading input from: {:?}", path);
+    let mut s = String::new();
+    file.read_to_string(&mut s)?;
+    let lines = s.lines().filter(|line| !line.is_empty()).collect::<Vec<_>>();
+    let cracked = cryptopals::set1::find_xord_string(&lines)?;
+    println!("    -> cracked message: {:?}", cracked.content);
     Ok(())
 }

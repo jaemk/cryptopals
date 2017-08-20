@@ -95,6 +95,10 @@ pub mod xor_crack {
 
     #[allow(non_snake_case)]
     /// Calculate the chi^2 value for this string using English letter frequencies
+    ///
+    /// Some modifications:
+    ///   - ignore inputs with 0 valid chars
+    ///   - ignore inputs with invalid char ratios > 10%
     fn chi_squared(s: &str) -> Result<f32> {
         let mut counts = [0u8; 27];
         let mut valid_char_count = 0u8;
@@ -116,6 +120,8 @@ pub mod xor_crack {
         }
         if valid_char_count == 0 { bail!("bad input") }
         let valid_char_count = valid_char_count as f32;
+        let invalid_ratio = (s.len() as f32 - valid_char_count) / s.len() as f32;
+        if invalid_ratio > 0.1 { bail!("high invalid ratio") }
 
         Ok(counts.iter().enumerate().fold(0.0, |score, (index, char_count)| {
             let freq = (*char_count as f32) / valid_char_count;
@@ -131,7 +137,7 @@ pub mod xor_crack {
         pub xor_key_n: u8
     }
     impl Candidate {
-        fn empty() -> Self {
+        pub fn empty() -> Self {
             Self {
                 score: std::f32::MAX,
                 content: String::new(),
@@ -143,19 +149,19 @@ pub mod xor_crack {
 
     /// Insert a `Candidate` at its sorted-position in the list of top candidates, popping
     /// off the last to keep a constant size, returning the new highest score (the last position score)
-    fn insert_score(topcandidates: &mut Vec<Candidate>, score: f32, s: &str, hexed_key: String, key_n: u8) -> Result<f32> {
+    pub fn insert_candidate(topcandidates: &mut Vec<Candidate>, new: Candidate) -> Result<f32> {
         let len = topcandidates.len();
         for i in 0..len {
             let replace_index: Option<usize> = {
                 let candidate = &topcandidates[i];
-                if score < candidate.score {
+                if new.score < candidate.score {
                     Some(i)
                 } else {
                     None
                 }
             };
             if let Some(index) = replace_index {
-                topcandidates.insert(index, Candidate{score: score, content: s.to_owned(), hexed_xor_key: hexed_key, xor_key_n: key_n});
+                topcandidates.insert(index, new);
                 topcandidates.pop();
                 return Ok(topcandidates[len-1].score)
             }
@@ -167,21 +173,45 @@ pub mod xor_crack {
     ///
     /// This solution uses character frequency analysis to rank the decoded string's in order of
     /// "most likely to be an english phrase". The lower the string's score, the higher its rank.
+    /// Ignores any xor keys that produce invalid unicode.
     pub fn crack_single_char_xor(bytes: &[u8]) -> Result<Candidate> {
         let mut topten: Vec<Candidate> = vec![Candidate::empty(); 10];
         let mut highest_score = std::f32::MAX;
         let len = bytes.len();
         for n in 0..std::u8::MAX {
             let key = vec![n; len];
-            let decoded = xor(&bytes, &key)?;
-            let s = match std::str::from_utf8(&decoded) { Ok(s) => s, _ => continue, };
+            let decrypted = xor(&bytes, &key)?;
+            let s = match std::str::from_utf8(&decrypted) { Ok(s) => s, _ => continue, };
             let score = match chi_squared(s) { Ok(f) => f, _ => continue, };
             if score < highest_score {
-                highest_score = insert_score(&mut topten, score, s, hex_encode(&key)?, n)?;
+                let new = Candidate {
+                    score: score,
+                    content: s.to_owned(),
+                    hexed_xor_key: hex_encode(&key)?,
+                    xor_key_n: n
+                };
+                highest_score = insert_candidate(&mut topten, new)?;
             }
         }
         Ok(topten.remove(0))
     }
+}
+
+
+/// From a list of hex encoded strings, find the one that's encrypted by a single-char xor
+///
+/// Challenge 4
+pub fn find_xord_string(strings: &[&str]) -> Result<xor_crack::Candidate> {
+    let mut topten = vec![xor_crack::Candidate::empty(); 10];
+    let mut highest_score = std::f32::MAX;
+    for s in strings {
+        let decoded = hex_decode(s.as_bytes())?;
+        let best_candidate = xor_crack::crack_single_char_xor(&decoded)?;
+        if best_candidate.score < highest_score {
+            highest_score = xor_crack::insert_candidate(&mut topten, best_candidate)?;
+        }
+    }
+    Ok(topten.remove(0))
 }
 
 

@@ -66,19 +66,6 @@ pub fn base64(bytes: &[u8]) -> Result<String> {
 }
 
 
-/// XOR a set of bytes with a given key
-///
-/// Challenge 2
-pub fn xor(bytes: &[u8], key: &[u8]) -> Result<Vec<u8>> {
-    if bytes.len() != key.len() { bail!(ErrorKind::InvalidXOR(bytes.len(), key.len())) }
-    let mut xored = Vec::with_capacity(bytes.len());
-    for (a, b) in bytes.iter().zip(key.iter()) {
-        xored.push(a ^ b);
-    }
-    Ok(xored)
-}
-
-
 /// Challenge 3
 pub mod xor_crack {
     // https://crypto.stackexchange.com/questions/30209/developing-algorithm-for-detecting-plain-text-via-frequency-analysis
@@ -187,7 +174,7 @@ pub mod xor_crack {
                 let new = Candidate {
                     score: score,
                     content: s.to_owned(),
-                    hexed_xor_key: hex_encode(&key)?,
+                    hexed_xor_key: Hex::new(&key).encode()?,
                     xor_key_n: n
                 };
                 highest_score = insert_candidate(&mut topten, new)?;
@@ -201,11 +188,11 @@ pub mod xor_crack {
 /// From a list of hex encoded strings, find the one that's encrypted by a single-char xor
 ///
 /// Challenge 4
-pub fn find_xord_string(strings: &[&str]) -> Result<xor_crack::Candidate> {
+pub fn find_single_char_xord_string(strings: &[&str]) -> Result<xor_crack::Candidate> {
     let mut topten = vec![xor_crack::Candidate::empty(); 10];
     let mut highest_score = std::f32::MAX;
     for s in strings {
-        let decoded = hex_decode(s.as_bytes())?;
+        let decoded = Hex::new(s.as_bytes()).decode()?;
         let best_candidate = xor_crack::crack_single_char_xor(&decoded)?;
         if best_candidate.score < highest_score {
             highest_score = xor_crack::insert_candidate(&mut topten, best_candidate)?;
@@ -225,24 +212,26 @@ mod tests {
         let expected = "SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t";
         assert_eq!(base64(input.as_bytes()).expect("base64 encoding failed"), expected);
     }
+
     #[test]
     fn base64_encodes_hex_strings() {
         let expected = "SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t";
         let input = "49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d";
-        let byte_input = hex_decode(input.as_bytes()).expect("hex decoding failed");
+        let byte_input = Hex::new(input.as_bytes())
+            .decode()
+            .expect("hex decoding failed");
         assert_eq!(base64(&byte_input).expect("base64 encoding failed"), expected);
     }
 
     #[test]
-    fn xors_things() {
-        let input = "1c0111001f010100061a024b53535009181c";
-        let xor_key = "686974207468652062756c6c277320657965";
-        let expected = "746865206b696420646f6e277420706c6179";
-
-        let input = hex_decode(input.as_bytes()).expect("failed decoding input hex");
-        let xor_key = hex_decode(xor_key.as_bytes()).expect("failed decoding xor-key hex");
-        let xored = xor(&input, &xor_key).expect("failed to xor");
-        let out = hex_encode(&xored).expect("failed to hex encode");
-        assert_eq!(out, expected);
+    fn cracks_single_char_xor() {
+        let expected = "Cooking MC's like a pound of bacon";
+        let input = "1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736";
+        let decoded = Hex::new(input.as_bytes())
+            .decode()
+            .expect("failed deciding input hex");
+        let decrypted = xor_crack::crack_single_char_xor(&decoded).expect("failed cracking single char xor");
+        assert_eq!(decrypted.content, expected);
+        assert_eq!(decrypted.xor_key_n, 88);
     }
 }

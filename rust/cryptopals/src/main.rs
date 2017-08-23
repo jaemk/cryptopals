@@ -32,6 +32,7 @@ fn set1() -> Result<()> {
     part3()?;
     part4()?;
     part5()?;
+    part6()?;
     Ok(())
 }
 
@@ -44,7 +45,7 @@ fn part1() -> Result<()> {
     println!("    input: {}", input);
 
     let bytes = cryptopals::Hex::new(input.as_bytes()).decode()?;
-    let base64 = cryptopals::set1::base64(&bytes)?;
+    let base64 = cryptopals::base64::Encode::from_bytes(&bytes).one_line(true).encode()?;
     println!("    -> base64: {}", base64);
     Ok(())
 }
@@ -77,7 +78,7 @@ fn part3() -> Result<()> {
     let input = "1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736";
     println!("    input: {}", input);
     let input_bytes = cryptopals::Hex::new(input.as_bytes()).decode()?;
-    let cracked = cryptopals::set1::xor_crack::crack_single_char_xor(&input_bytes)?;
+    let cracked = cryptopals::crack::xor::crack_single_char_xor(&input_bytes)?;
     println!("    -> cracked message: {:?}", cracked.content);
     println!("    -> cracked xor key (byte): {}", cracked.xor_key_n);
     println!("    -> cracked xor key (full hex): {}", cracked.hexed_xor_key);
@@ -97,7 +98,7 @@ fn part4() -> Result<()> {
     let mut s = String::new();
     file.read_to_string(&mut s)?;
     let lines = s.lines().filter(|line| !line.is_empty()).collect::<Vec<_>>();
-    let cracked = cryptopals::set1::find_single_char_xord_string(&lines)?;
+    let cracked = cryptopals::crack::xor::find_single_char_xord_string(&lines)?;
     println!("    -> cracked message: {:?}", cracked.content);
     Ok(())
 }
@@ -114,6 +115,32 @@ I go crazy when I hear a cymbal";
     let encrypted = cryptopals::xor(input.as_bytes(), &key)?;
     let encoded = cryptopals::Hex::new(&encrypted).encode()?;
     println!("    -> out: {:?}", encoded);
+    Ok(())
+}
+
+
+fn part6() -> Result<()> {
+    use std::io::{BufRead, BufReader};
+    println!("  * Challenge 6:");
+    println!("  -- crack a repeating key xor --");
+    let filename = "input_files/set1_challenge6.txt";
+    let path = std::path::PathBuf::from(filename);
+    let file = std::fs::File::open(&path)?;
+    println!("    reading input from: {:?}", path);
+
+    // read lines from file, removing all line breaks
+    let mut rdr = BufReader::new(file);
+    let mut s = String::new();
+    let mut buf = String::new();
+    loop {
+        let n = rdr.read_line(&mut buf)?;
+        if n == 0 { break; }
+        s.push_str(buf.trim_right());
+        buf.clear();
+    }
+
+    let decoded = cryptopals::base64::Decode::from_str(&s).decode()?;
+    let _ = cryptopals::crack::xor::crack_repeating_key_xor(&decoded)?;
     Ok(())
 }
 

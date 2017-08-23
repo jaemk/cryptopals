@@ -21,9 +21,9 @@ mod errors {
                 description("hex input invalid length")
                 display("hex input length must be a factor of 2, received size: {}", n)
             }
-            InvalidXOR(n1: usize, n2: usize) {
-                description("invalid xor input and key")
-                display("xor input and key must be the same length, received sizes: {}, {}", n1, n2)
+            InvalidSlices(n1: usize, n2: usize) {
+                description("differently sized input slices")
+                display("input slices must be the same length, received sizes: {}, {}", n1, n2)
             }
         }
     }
@@ -31,7 +31,7 @@ mod errors {
 use errors::*;
 pub use errors::Error;
 
-pub mod set1;
+pub mod crack;
 
 
 pub struct Hex<'a> {
@@ -82,10 +82,161 @@ impl<'a> Hex<'a> {
 }
 
 
+/// base64 encode/decode a set of bytes
+pub mod base64 {
+    use super::errors::*;
+    const A: u8         = 'A' as u8;
+    const Z: u8         = 'Z' as u8;
+    const LOWER_A: u8   = 'a' as u8;
+    const LOWER_Z: u8   = 'z' as u8;
+    const ZERO: u8      = '0' as u8;
+    const NINE: u8      = '9' as u8;
+    const PLUS: u8      = '+' as u8;
+    const SLASH: u8     = '/' as u8;
+    const EQ: u8        = '=' as u8;
+
+    // base64 indices -- offset => `char-code + offset = index`
+    const A_IND: u8         = 0;    // offset -65
+    const Z_IND: u8         = 25;   // --- ^^ ---
+    const LOWER_A_IND: u8   = 26;   // offset -71
+    const LOWER_Z_IND: u8   = 51;   // --- ^^ ---
+    const ZERO_IND: u8      = 52;   // offset +4
+    const NINE_IND: u8      = 61;   // --- ^^ ---
+    const PLUS_IND: u8      = 62;
+    const SLASH_IND: u8     = 63;
+
+    pub struct Decode<'a> {
+        bytes: &'a [u8],
+    }
+    impl<'a> Decode<'a> {
+        pub fn from_bytes(bytes: &'a [u8]) -> Self {
+            Self { bytes }
+        }
+        pub fn from_str(s: &'a str) -> Self {
+            Self { bytes: s.as_bytes() }
+        }
+        #[inline]
+        fn four_chars_to_three_bytes(chunk: &[u8]) -> [u8; 3] {
+            let mut bytes = [0; 4];
+            // translate char codes to base64 indices
+            for (i, c) in chunk.iter().enumerate() {
+                bytes[i] = match *c {
+                    A...Z               => c - 65,
+                    LOWER_A...LOWER_Z   => c - 71,
+                    ZERO...NINE         => c + 4,
+                    SLASH               => SLASH,
+                    PLUS                => PLUS,
+                    EQ                  => 0,
+                    _ => unimplemented!(),
+                };
+            }
+            // smash the four 6bit chars together and split into three bytes
+            let buf = bytes.iter().fold(0u32, |acc, byte| (acc << 6) | (*byte as u32));
+            [((buf >> 16) & 255) as u8, ((buf >> 8) & 255) as u8, (buf & 255) as u8]
+        }
+
+        pub fn decode(&self) -> Result<Vec<u8>> {
+            let mut buf = Vec::with_capacity(self.bytes.len() / 4 * 3);
+            for chunk in self.bytes.chunks(4) {
+                let bytes = Self::four_chars_to_three_bytes(chunk);
+                for b in &bytes { buf.push(*b); }
+            }
+            let mut discard = 0;
+            for b in buf.iter().rev() {
+                if *b == 0 { discard += 1; } else { break; }
+            }
+            if discard > 0 {
+                let len = buf.len();
+                buf.truncate(len - discard);
+            }
+            Ok(buf)
+        }
+    }
+
+    pub struct Encode<'a> {
+        bytes: &'a [u8],
+        one_line: bool,
+    }
+    impl<'a> Encode<'a> {
+        pub fn from_bytes(bytes: &'a [u8]) -> Self {
+            Self {
+                bytes: bytes,
+                one_line: false,
+            }
+        }
+
+        /// Dump encoded bytes as one line
+        pub fn one_line(&mut self, one_line: bool) -> &mut Self {
+            self.one_line = one_line;
+            self
+        }
+
+        #[inline]
+        fn three_bytes_to_sixbit_chars(chunk: &[u8]) -> [char; 4] {
+            // concat bits
+            let mut buf = chunk.iter().fold(0u32, |acc, byte| (acc << 8) | (*byte as u32) );
+            for _ in 0..(3-chunk.len()) {
+                buf = buf << 8;
+            }
+
+            // pull off 6bit chunks, MSB's to LSB's
+            //  11111111 00000000 11111111 00000000
+            // |---a----|---b----|---c----|---d----|
+            let indices: [u8; 4] = [((buf >> 18) & 63) as u8, ((buf >> 12) & 63) as u8, ((buf >> 6) & 63) as u8, (buf & 63) as u8];
+
+            // translate base64 indices to chars
+            let mut buf = ['A'; 4];
+            for (i, ind) in indices.iter().enumerate() {
+                buf[i] = match *ind {
+                    A_IND ... Z_IND             => (ind + 65) as char,
+                    LOWER_A_IND ... LOWER_Z_IND => (ind + 71) as char,
+                    ZERO_IND ... NINE_IND       => (ind - 4) as char,
+                    PLUS_IND                    => '+',
+                    SLASH_IND                   => '/',
+                    _ => unimplemented!(),
+                };
+            }
+            buf
+        }
+
+        pub fn encode(&self) -> Result<String> {
+
+            let mut enc = String::new();
+            let mut count = 0;
+            for chunk in self.bytes.chunks(3) {
+                let len = chunk.len();
+                let chars = if len == 3 {
+                    Self::three_bytes_to_sixbit_chars(chunk)
+                } else {
+                    // trailing chunk of bytes
+                    let mut chars: [char; 4] = Self::three_bytes_to_sixbit_chars(chunk);
+                    chars[3] = if chars[3] == 'A' { '=' } else { chars[3] };
+                    for i in (1..len).rev() {
+                        if chars[i] == '=' && chars[i-1] == 'A' {
+                            chars[i-1] = '=';
+                        }
+                    }
+                    chars
+                };
+                for c in &chars {
+                    if !self.one_line && count == 60 {
+                        enc.push('\n');
+                        count = 0;
+                    }
+                    enc.push(*c);
+                    count += 1;
+                }
+            }
+            Ok(enc)
+        }
+    }
+}
+
+
 /// xor two slices
-pub fn xor<'a>(src: &'a [u8], key: &'a [u8]) -> Result<Vec<u8>> {
+pub fn xor(src: &[u8], key: &[u8]) -> Result<Vec<u8>> {
     if src.len() != key.len() {
-        bail!(ErrorKind::InvalidXOR(src.len(), key.len()))
+        bail!(ErrorKind::InvalidSlices(src.len(), key.len()))
     }
     let mut buf = Vec::with_capacity(src.len());
     for (a, b) in src.iter().zip(key.iter()) {
@@ -94,6 +245,24 @@ pub fn xor<'a>(src: &'a [u8], key: &'a [u8]) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+
+/// Calculates the edit/hamming distance (differing number of bits)
+/// between two slices
+pub fn edit_dist(a: &[u8], b: &[u8]) -> Result<u32> {
+    if a.len() != b.len() {
+        bail!(ErrorKind::InvalidSlices(a.len(), b.len()))
+    }
+    #[inline]
+    fn count_ones(n: u8) -> u32 {
+        // rust primitive ints have a `count_ones` method that will
+        // do a faster popcount if supported. Just doing this for the sake of doing it
+        // n.count_ones()
+        (0..8).fold(0, |acc, sh| acc + ((n >> sh) & 1) as u32)
+    }
+    Ok(a.iter().zip(b.iter()).fold(0, |acc, (a, b)| {
+        acc + count_ones(a ^ b)
+    }))
+}
 
 #[cfg(test)]
 mod tests {
@@ -151,4 +320,49 @@ I go crazy when I hear a cymbal";
         let encoded = Hex::new(&encrypted).encode().expect("failed encoding bytes");
         assert_eq!(expected, encoded);
     }
+
+    #[test]
+    fn base64_encodes() {
+        let input = "I'm killing your brain like a poisonous mushroom";
+        let expected = "SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t";
+        assert_eq!(base64::Encode::from_bytes(input.as_bytes()).one_line(true).encode().expect("base64 encoding failed"), expected);
+
+        let input = "this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test";
+        let expected = "dGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3Q=";
+        assert_eq!(base64::Encode::from_bytes(input.as_bytes()).one_line(true).encode().expect("base64 encoding failed"), expected);
+    }
+
+    #[test]
+    fn base64_decodes() {
+        let input = "SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t";
+        let expected = "I'm killing your brain like a poisonous mushroom";
+        let decoded_bytes = base64::Decode::from_bytes(input.as_bytes()).decode().expect("base64 encoding failed");
+        let decoded = std::str::from_utf8(&decoded_bytes).expect("bad utf8");
+        assert_eq!(decoded, expected);
+
+        let input = "dGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3QgdGhpcyBpcyBhIHRlc3Q=";
+        let expected = "this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test this is a test";
+        let decoded_bytes = base64::Decode::from_str(input).decode().expect("base64 decoding failed");
+        assert_eq!(std::str::from_utf8(&decoded_bytes).expect("bad utf8"), expected);
+    }
+
+    #[test]
+    fn base64_encodes_hex_strings() {
+        let expected = "SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t";
+        let input = "49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d";
+        let byte_input = Hex::new(input.as_bytes())
+            .decode()
+            .expect("hex decoding failed");
+        assert_eq!(base64::Encode::from_bytes(&byte_input).one_line(true).encode().expect("base64 encoding failed"), expected);
+    }
+
+    #[test]
+    fn calculates_edit_distance() {
+        let a = "this is a test";
+        let b = "wokka wokka!!!";
+        let expected = 37;
+        let dist = edit_dist(a.as_bytes(), b.as_bytes()).expect("failed to calculate edit distance");
+        assert_eq!(dist, expected);
+    }
+
 }
